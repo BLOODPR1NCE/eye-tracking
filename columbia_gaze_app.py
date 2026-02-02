@@ -1,163 +1,291 @@
-#columbia_gaze_app.py
+# gaze_tracker_app.py
 import cv2
 import numpy as np
 import tkinter as tk
-from tkinter import Canvas
+from tkinter import Canvas, Label, Frame
 import tensorflow as tf
 import time
 import sys
+import os
+from PIL import Image, ImageTk
+import threading
 
-class WorkingGazeTracker:
-    def __init__(self, model_path='gaze_model_final.keras'):
-        print("="*50)
-        print("ЗАПУСК ГЛАЗНОГО ТРЕКЕРА")
-        print("="*50)
+class AdvancedGazeTracker:
+    def __init__(self, model_path='models/gaze_model_final.keras'):
+        print("="*60)
+        print("ЗАПУСК ПРОДВИНУТОГО ГЛАЗНОГО ТРЕКЕРА")
+        print("="*60)
         
-        # Загрузка модели
+        self.model = None #инициализация
+        self.cap = None
+        self.running = True
+        self.face_detected = False
+        self.eyes_detected = False
+        self.current_prediction = (0.5, 0.5)
+        
+        self.screen_width = 1920 #экран
+        self.screen_height = 1080
+        self.dot_size = 30
+        self.smoothing_factor = 0.3
+        
+        self.x_buffer = []
+        self.y_buffer = []
+        self.buffer_size = 15
+        
+        self.frame_count = 0 #статистика
+        self.start_time = time.time()
+        self.fps = 0
+        self.detection_history = []
+        
         print("\nЗагрузка модели...")
+        if not self.load_model(model_path):
+            print("Не удалось загрузить модель. Используется демо-режим.")
+        
+        print("Загрузка детекторов...")
+        self.load_detectors()
+        
+        print("Инициализация камеры...")
+        self.init_camera()
+        
+        print("Создание интерфейса...")
+        self.create_gui()
+        
+        self.start_threads()
+    
+    def load_model(self, model_path):
+        """Загружает модель"""
         try:
-            self.model = tf.keras.models.load_model(model_path)
-            print("✓ Модель загружена успешно")
+            if os.path.exists(model_path):
+                self.model = tf.keras.models.load_model(model_path)
+                print(f"✓ Модель загружена: {model_path}")
+                return True
+            else:
+                possible_paths = [
+                    'gaze_model_final.keras',
+                    'gaze_model_final.h5',
+                    'models/gaze_model_final.h5'
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        self.model = tf.keras.models.load_model(path)
+                        print(f"✓ Модель загружена: {path}")
+                        return True
+                
+                print("✗ Модель не найдена")
+                return False
+                
         except Exception as e:
             print(f"✗ Ошибка загрузки модели: {e}")
-            print("Создание тестовой модели...")
-            self.create_dummy_model()
-        
-        # Загрузка каскадов Хаара
-        print("\nЗагрузка детекторов...")
-        self.face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
-        self.eye_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_eye.xml'
-        )
-        
-        if self.face_cascade.empty() or self.eye_cascade.empty():
-            print("✗ Ошибка: не удалось загрузить каскады!")
-            sys.exit(1)
-        print("✓ Детекторы загружены")
-        
-        # Инициализация камеры
-        print("\nИнициализация камеры...")
-        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        if not self.cap.isOpened():
-            print("✗ Ошибка: камера не найдена!")
-            sys.exit(1)
-        
-        # Настройки камеры
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        print("✓ Камера готова")
-        
-        # Получаем размеры экрана
-        self.screen_width = 1920  # Можно изменить под ваш монитор
-        self.screen_height = 1080
-        
-        # Создание окна
-        self.root = tk.Tk()
-        self.root.title("Eye Gaze Tracker")
-        
-        # Полноэкранный режим
+            return False
+    
+    def load_detectors(self):
+        """Загружает детекторы лиц и глаз"""
+        try:
+            self.face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            )
+            self.eye_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_eye.xml'
+            )
+            
+            if self.face_cascade.empty() or self.eye_cascade.empty():
+                print("✗ Не удалось загрузить детекторы")
+                return False
+            
+            print("✓ Детекторы загружены")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Ошибка загрузки детекторов: {e}")
+            return False
+    
+    def init_camera(self):
+        """Инициализирует камеру"""
+        try:
+            for i in range(3):
+                self.cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if self.cap.isOpened():
+                    print(f"✓ Камера найдена (индекс {i})")
+                    
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640) #настройка камеры
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+                    
+                    self.camera_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)) #размеры камеры
+                    self.camera_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    
+                    print(f"  Размер: {self.camera_width}x{self.camera_height}")
+                    return True
+            
+            print("✗ Камера не найдена")
+            return False
+            
+        except Exception as e:
+            print(f"✗ Ошибка инициализации камеры: {e}")
+            return False
+    
+    def create_gui(self):
+        self.root = tk.Tk() #основное окно
+        self.root.title("Advanced Gaze Tracker")
+        self.root.configure(bg='#2c3e50')
         self.root.attributes('-fullscreen', True)
-        self.root.configure(bg='black')
         
-        # Создаем холст
-        self.canvas = Canvas(self.root, bg='black', highlightthickness=0)
+        self.canvas = Canvas(self.root, bg='#34495e', highlightthickness=0) #холст для взгляда
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
-        # Зеленая точка для отслеживания взгляда
-        self.dot_size = 25
+        # Зеленая точка для отслеживания
         self.dot = self.canvas.create_oval(
             0, 0, self.dot_size, self.dot_size,
-            fill='#00FF00',
-            outline='#00FF00',
+            fill='#2ecc71',
+            outline='#27ae60',
             width=3
         )
         
-        # Статус
-        self.status_text = self.canvas.create_text(
-            20, 20,
-            text="Инициализация...",
-            fill='white',
-            font=('Arial', 14, 'bold'),
-            anchor='w'
-        )
+        self.info_frame = Frame(self.root, bg='#2c3e50') #инфопанель
+        self.info_frame.place(x=20, y=20)
         
-        # Флаги
-        self.eyes_detected = False
-        self.face_detected = False
+        # Элементы информации
+        self.status_label = Label(self.info_frame, 
+                                 text="Статус: Инициализация...",
+                                 font=('Arial', 12, 'bold'),
+                                 fg='white',
+                                 bg='#2c3e50')
+        self.status_label.pack(anchor='w')
         
-        # Буфер для сглаживания
-        self.x_buffer = []
-        self.y_buffer = []
-        self.buffer_size = 10
+        self.fps_label = Label(self.info_frame,
+                              text="FPS: 0.0",
+                              font=('Arial', 10),
+                              fg='#ecf0f1',
+                              bg='#2c3e50')
+        self.fps_label.pack(anchor='w')
         
-        # Статистика
-        self.frame_count = 0
-        self.start_time = time.time()
-        self.fps = 0
+        self.position_label = Label(self.info_frame,
+                                   text="Позиция: [0, 0]",
+                                   font=('Arial', 10),
+                                   fg='#ecf0f1',
+                                   bg='#2c3e50')
+        self.position_label.pack(anchor='w')
+        
+        self.mode_label = Label(self.info_frame,
+                               text="Режим: Загрузка...",
+                               font=('Arial', 10),
+                               fg='#ecf0f1',
+                               bg='#2c3e50')
+        self.mode_label.pack(anchor='w')
+        
+        # Видео панель
+        self.video_label = Label(self.root, bg='#2c3e50')
+        self.video_label.place(x=20, y=150)
         
         # Привязка клавиш
         self.root.bind('<Escape>', self.quit)
-        self.root.bind('<c>', self.center_dot)
+        self.root.bind('<c>', self.calibrate)
         self.root.bind('<f>', self.toggle_fullscreen)
+        self.root.bind('<r>', self.reset_tracking)
+        self.root.bind('<d>', self.toggle_debug)
         
         # Центрируем точку
         self.center_dot()
         
-        # Запуск обновления
-        self.update()
+        # Флаг отладки
+        self.debug_mode = False
     
-    def create_dummy_model(self):
-        """Создание простой модели для тестирования"""
-        print("Создание тестовой модели...")
-        left_input = tf.keras.layers.Input(shape=(32, 32, 1))
-        right_input = tf.keras.layers.Input(shape=(32, 32, 1))
+    def center_dot(self, event=None):
+        x = self.screen_width // 2
+        y = self.screen_height // 2
         
-        def process(x):
-            x = tf.keras.layers.Flatten()(x)
-            x = tf.keras.layers.Dense(16, activation='relu')(x)
-            return x
+        self.x_buffer = [x] * self.buffer_size
+        self.y_buffer = [y] * self.buffer_size
         
-        left_features = process(left_input)
-        right_features = process(right_input)
-        merged = tf.keras.layers.Concatenate()([left_features, right_features])
-        output = tf.keras.layers.Dense(2, activation='sigmoid')(merged)
+        self.move_dot(x, y)
+        self.status_label.config(text="Статус: Точка центрирована", fg='#2ecc71')
+    
+    def calibrate(self, event=None):
+        self.status_label.config(text="Статус: Калибровка...", fg='#f39c12')
+        self.center_dot()
+        self.status_label.config(text="Статус: Калибровка завершена", fg='#2ecc71')
+    
+    def toggle_fullscreen(self, event=None):
+        current = self.root.attributes('-fullscreen')
+        self.root.attributes('-fullscreen', not current)
+    
+    def reset_tracking(self, event=None):
+        self.x_buffer = []
+        self.y_buffer = []
+        self.center_dot()
+        self.status_label.config(text="Статус: Трекинг сброшен", fg='#e74c3c')
+    
+    def toggle_debug(self, event=None):
+        self.debug_mode = not self.debug_mode
+        mode = "ВКЛ" if self.debug_mode else "ВЫКЛ"
+        self.status_label.config(text=f"Статус: Режим отладки {mode}", fg='#9b59b6')
+    
+    def process_frame(self, frame):
+        self.frame_count += 1 #фпс
+        elapsed = time.time() - self.start_time
+        if elapsed > 1.0:
+            self.fps = self.frame_count / elapsed
+            self.frame_count = 0
+            self.start_time = time.time()
+            self.fps_label.config(text=f"FPS: {self.fps:.1f}")
         
-        self.model = tf.keras.Model(inputs=[left_input, right_input], outputs=output)
-        self.model.compile(optimizer='adam', loss='mse')
-        print("✓ Тестовая модель создана")
+        left_eye, right_eye, processed_frame = self.detect_eyes(frame) #обнаружение глаз
+        
+        if left_eye is not None and right_eye is not None:
+            self.eyes_detected = True
+            
+            if self.model is not None:
+                prediction = self.predict_gaze(left_eye, right_eye)
+                self.current_prediction = prediction
+                
+                x = int(prediction[0] * self.screen_width)
+                y = int(prediction[1] * self.screen_height)
+                
+                x, y = self.apply_smoothing(x, y)
+                
+                self.move_dot(x, y)
+                
+                self.position_label.config(text=f"Позиция: [{x}, {y}]")
+                self.status_label.config(text="Статус: Отслеживание активно", fg='#2ecc71')
+        else:
+            self.eyes_detected = False
+            self.status_label.config(text="Статус: Глаза не обнаружены", fg='#e74c3c')
+        
+        # Обновляем режим
+        mode_text = "Режим: Нейросеть" if not self.demo_mode else "Режим: Демо"
+        if self.debug_mode:
+            mode_text += " (отладка)"
+        self.mode_label.config(text=mode_text)
+        
+        return processed_frame
     
     def detect_eyes(self, frame):
-        """Обнаружение лица и глаз с использованием каскадов Хаара"""
-        # Конвертируем в grayscale
+        """Обнаруживает глаза на кадре"""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Улучшаем контраст
         gray = cv2.equalizeHist(gray)
         
-        # Находим лица
+        display_frame = frame.copy()
+        
         faces = self.face_cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.1, 
+            gray,
+            scaleFactor=1.1,
             minNeighbors=5,
-            minSize=(150, 150)
+            minSize=(100, 100)
         )
         
         if len(faces) == 0:
             self.face_detected = False
-            self.eyes_detected = False
-            return None, None
+            return None, None, display_frame
         
-        # Берем самое большое лицо
-        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
         self.face_detected = True
         
-        # Область лица
+        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
         face_roi = gray[y:y+h, x:x+w]
         
-        # Находим глаза в области лица
+        if self.debug_mode:
+            cv2.rectangle(display_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        
         eyes = self.eye_cascade.detectMultiScale(
             face_roi,
             scaleFactor=1.1,
@@ -166,216 +294,164 @@ class WorkingGazeTracker:
         )
         
         if len(eyes) < 2:
-            self.eyes_detected = False
-            return None, None
+            return None, None, display_frame
         
-        # Сортируем глаза по X координате
         eyes = sorted(eyes, key=lambda e: e[0])
-        
-        # Берем два глаза (если больше 2, берем первые два)
-        if len(eyes) > 2:
-            eyes = eyes[:2]
-        
-        # Извлекаем левый глаз (первый в списке)
+
         ex1, ey1, ew1, eh1 = eyes[0]
-        left_eye = face_roi[ey1:ey1+eh1, ex1:ex1+ew1]
-        
-        # Извлекаем правый глаз (второй в списке)
         ex2, ey2, ew2, eh2 = eyes[1]
+        
+        left_eye = face_roi[ey1:ey1+eh1, ex1:ex1+ew1]
         right_eye = face_roi[ey2:ey2+eh2, ex2:ex2+ew2]
         
-        self.eyes_detected = True
-        return left_eye, right_eye
+        left_eye = self.preprocess_eye(left_eye)
+        right_eye = self.preprocess_eye(right_eye)
+        
+        if self.debug_mode:
+            cv2.rectangle(display_frame, 
+                         (x + ex1, y + ey1), 
+                         (x + ex1 + ew1, y + ey1 + eh1), 
+                         (255, 0, 0), 2)
+            cv2.rectangle(display_frame, 
+                         (x + ex2, y + ey2), 
+                         (x + ex2 + ew2, y + ey2 + eh2), 
+                         (255, 0, 0), 2)
+        
+        return left_eye, right_eye, display_frame
     
-    def preprocess_eyes(self, left_eye, right_eye):
-        """Предобработка глаз для модели"""
+    def preprocess_eye(self, eye_img):
+        if eye_img is None or eye_img.size == 0:
+            return None
+
+        eye_resized = cv2.resize(eye_img, (36, 36))
+        eye_eq = cv2.equalizeHist(eye_resized)
+        eye_norm = eye_eq.astype('float32') / 255.0
+        
+        return eye_norm
+    
+    def predict_gaze(self, left_eye, right_eye):
         if left_eye is None or right_eye is None:
-            return None, None
+            return (0.5, 0.5)
         
-        # Ресайз до 32x32
-        left_resized = cv2.resize(left_eye, (32, 32))
-        right_resized = cv2.resize(right_eye, (32, 32))
-        
-        # Улучшение контраста
-        left_eq = cv2.equalizeHist(left_resized)
-        right_eq = cv2.equalizeHist(right_resized)
-        
-        # Нормализация
-        left_norm = left_eq.astype('float32') / 255.0
-        right_norm = right_eq.astype('float32') / 255.0
-        
-        # Добавляем размерности
-        left_processed = np.expand_dims(left_norm, axis=(0, -1))
-        right_processed = np.expand_dims(right_norm, axis=(0, -1))
-        
-        return left_processed, right_processed
+        try:
+            left_input = np.expand_dims(left_eye, axis=(0, -1))
+            right_input = np.expand_dims(right_eye, axis=(0, -1))
+            prediction = self.model.predict([left_input, right_input], verbose=0)[0]
+            
+            return tuple(prediction)
+            
+        except Exception as e:
+            print(f"Ошибка предсказания: {e}")
+            return (0.5, 0.5)
     
-    def center_dot(self, event=None):
-        """Центрирование точки"""
-        x = self.screen_width // 2
-        y = self.screen_height // 2
-        
-        # Очищаем буфер
-        self.x_buffer = [x] * self.buffer_size
-        self.y_buffer = [y] * self.buffer_size
-        
-        self.move_dot(x, y)
-        self.canvas.itemconfig(self.status_text, text="Точка центрирована")
-    
-    def toggle_fullscreen(self, event=None):
-        """Переключение полноэкранного режима"""
-        current = self.root.attributes('-fullscreen')
-        self.root.attributes('-fullscreen', not current)
-    
-    def move_dot(self, x, y):
-        """Плавное перемещение точки"""
-        # Добавляем в буфер
+    def apply_smoothing(self, x, y):
+        """Применяет сглаживание к координатам"""
         self.x_buffer.append(x)
         self.y_buffer.append(y)
         
-        # Ограничиваем размер буфера
         if len(self.x_buffer) > self.buffer_size:
             self.x_buffer.pop(0)
             self.y_buffer.pop(0)
         
-        # Используем медиану для сглаживания
-        if len(self.x_buffer) >= 3:
-            smooth_x = np.median(self.x_buffer[-3:])
-            smooth_y = np.median(self.y_buffer[-3:])
-        else:
-            smooth_x = np.mean(self.x_buffer) if self.x_buffer else x
-            smooth_y = np.mean(self.y_buffer) if self.y_buffer else y
+        smooth_x = 0
+        smooth_y = 0
         
-        # Плавное движение (экспоненциальное сглаживание)
-        current_coords = self.canvas.coords(self.dot)
-        if current_coords:
-            current_x = (current_coords[0] + current_coords[2]) / 2
-            current_y = (current_coords[1] + current_coords[3]) / 2
-            
-            # Медленное сглаживание для стабильности
-            alpha = 0.2
-            final_x = current_x * (1 - alpha) + smooth_x * alpha
-            final_y = current_y * (1 - alpha) + smooth_y * alpha
-        else:
-            final_x, final_y = smooth_x, smooth_y
+        for i in range(len(self.x_buffer)):
+            weight = self.smoothing_factor * (1 - self.smoothing_factor) ** i
+            smooth_x += self.x_buffer[-(i+1)] * weight
+            smooth_y += self.y_buffer[-(i+1)] * weight
         
-        # Ограничиваем границы
-        final_x = max(self.dot_size//2, min(self.screen_width - self.dot_size//2, final_x))
-        final_y = max(self.dot_size//2, min(self.screen_height - self.dot_size//2, final_y))
+        total_weight = sum(self.smoothing_factor * (1 - self.smoothing_factor) ** i #номарлизация
+                          for i in range(len(self.x_buffer)))
         
-        # Обновляем позицию
+        if total_weight > 0:
+            smooth_x /= total_weight
+            smooth_y /= total_weight
+        
+        return int(smooth_x), int(smooth_y)
+    
+    def move_dot(self, x, y):
+        x = max(self.dot_size//2, min(self.screen_width - self.dot_size//2, x))
+        y = max(self.dot_size//2, min(self.screen_height - self.dot_size//2, y))
+        
         self.canvas.coords(
             self.dot,
-            final_x - self.dot_size//2,
-            final_y - self.dot_size//2,
-            final_x + self.dot_size//2,
-            final_y + self.dot_size//2
+            x - self.dot_size//2,
+            y - self.dot_size//2,
+            x + self.dot_size//2,
+            y + self.dot_size//2
         )
-        
-        return final_x, final_y
     
-    def update(self):
-        """Основной цикл обновления"""
-        # Расчет FPS
-        self.frame_count += 1
-        elapsed = time.time() - self.start_time
-        if elapsed > 1.0:
-            self.fps = self.frame_count / elapsed
-            self.frame_count = 0
-            self.start_time = time.time()
-        
-        # Чтение кадра
-        ret, frame = self.cap.read()
-        if ret:
-            # Обнаружение глаз
-            left_eye, right_eye = self.detect_eyes(frame)
-            
-            # Обновление статуса
-            if self.face_detected:
-                if self.eyes_detected:
-                    status = "✓ Глаза обнаружены"
-                    color = "lime"
+    def update_video(self):
+        while self.running:
+            if self.cap is not None and self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    processed_frame = self.process_frame(frame)
                     
-                    # Предобработка и предсказание
-                    left_processed, right_processed = self.preprocess_eyes(left_eye, right_eye)
+                    rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(rgb_frame)
+                    img_tk = ImageTk.PhotoImage(image=img)
                     
-                    if left_processed is not None:
-                        try:
-                            prediction = self.model.predict(
-                                [left_processed, right_processed], verbose=0
-                            )[0]
-                            
-                            # Преобразуем в координаты экрана
-                            x = int(prediction[0] * self.screen_width)
-                            y = int(prediction[1] * self.screen_height)
-                            
-                            # Перемещаем точку
-                            final_x, final_y = self.move_dot(x, y)
-                            
-                            # Обновляем статус
-                            status_text = f"FPS: {self.fps:.1f} | Позиция: [{final_x:.0f}, {final_y:.0f}]"
-                            
-                        except Exception as e:
-                            status_text = f"FPS: {self.fps:.1f} | Ошибка предсказания"
-                    else:
-                        status_text = f"FPS: {self.fps:.1f} | Ошибка обработки"
+                    self.video_label.config(image=img_tk)
+                    self.video_label.image = img_tk
                 else:
-                    status = "⚠ Лицо есть, глаза не найдены"
-                    color = "yellow"
-                    status_text = f"FPS: {self.fps:.1f} | Поиск глаз..."
-            else:
-                status = "✗ Лицо не обнаружено"
-                color = "red"
-                status_text = f"FPS: {self.fps:.1f} | Подойдите ближе к камере"
+                    print("Ошибка чтения кадра")
             
-            # Обновление интерфейса
-            self.canvas.itemconfig(self.status_text, text=status_text)
-            
-            # Обновление статуса в углу экрана
-            self.canvas.create_rectangle(0, 0, 200, 60, fill='black', outline='')
-            self.canvas.create_text(100, 30, text=status, fill=color, 
-                                   font=('Arial', 12, 'bold'))
-        else:
-            self.canvas.itemconfig(self.status_text, text="Ошибка камеры")
-        
-        # Следующее обновление
-        self.root.after(33, self.update)  # ~30 FPS
+            time.sleep(0.03)
+    
+    def start_threads(self):
+        self.video_thread = threading.Thread(target=self.update_video, daemon=True)
+        self.video_thread.start()
     
     def quit(self, event=None):
-        """Выход из приложения"""
         print("\nЗавершение работы...")
-        self.cap.release()
+        self.running = False
+        
+        if self.cap is not None:
+            self.cap.release()
+        
+        self.root.quit()
         self.root.destroy()
         print("Приложение завершено")
     
     def run(self):
-        """Запуск приложения"""
-        print("\n" + "="*50)
+        """Запускает приложение"""
+        print("\n" + "="*60)
         print("ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ:")
-        print("="*50)
+        print("="*60)
         print("1. Сядьте на расстоянии 50-80 см от камеры")
-        print("2. Убедитесь, что ваше лицо хорошо освещено")
+        print("2. Убедитесь в хорошем освещении")
         print("3. Расположите лицо в центре кадра")
-        print("4. Двигайте ТОЛЬКО ГЛАЗАМИ, не поворачивайте голову")
-        print("5. Для калибровки смотрите в центр и нажмите 'C'")
+        print("4. Для калибровки смотрите в центр и нажмите 'C'")
         print("\nУПРАВЛЕНИЕ:")
         print("  ESC - выход")
-        print("  C   - центрировать точку")
-        print("  F   - переключить полноэкранный режим")
-        print("="*50)
+        print("  C   - калибровка")
+        print("  F   - полноэкранный режим")
+        print("  R   - сброс трекинга")
+        print("  D   - режим отладки")
+        print("="*60)
         print("\nЗапуск трекера...")
         
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        except Exception as e:
+            print(f"\nОшибка в приложении: {e}")
+        finally:
+            self.quit()
 
 if __name__ == "__main__":
     try:
-        app = WorkingGazeTracker('gaze_model_final.keras')
-        app.run()
+        model_path = 'models/gaze_model_final.keras'
+        if not os.path.exists(model_path):
+            print(f"Модель не найдена: {model_path}")
+            print("Завершение работы...")
+        else:
+            app = AdvancedGazeTracker(model_path)
+            app.run()
+            
     except Exception as e:
-        print(f"\n✗ Критическая ошибка: {e}")
-        print("\nПроверьте следующие моменты:")
-        print("1. Установлены все библиотеки (tensorflow, opencv-python)")
-        print("2. Камера подключена и работает")
-        print("3. Файлы каскадов загружены")
-        print("4. Модель обучена и сохранена")
+        print(f"\nКритическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
         input("\nНажмите Enter для выхода...")
