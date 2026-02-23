@@ -1,4 +1,4 @@
-# data_preparation_simple.py
+# data_preparation.py
 import cv2
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -9,11 +9,10 @@ class SimpleGazeDataLoader:
         self.data_path = data_path
         
     def load_mpiigaze(self, max_participants=3):
-        """Загружает данные MPIIGaze"""
         eyes_left, eyes_right, targets = [], [], []
         
         for p in range(max_participants):
-            p_str = f'p{str(p).zfill(2)}'
+            p_str = f'p{str(p).zfill(2)}' #p01
             path = os.path.join(self.data_path, 'Data', 'Original', p_str)
             
             if not os.path.exists(path):
@@ -40,13 +39,10 @@ class SimpleGazeDataLoader:
                         if img is None:
                             continue
                             
-                        # Извлекаем координаты
                         x, y = ann[24]/1920.0, ann[25]/1080.0
                         
-                        # Извлекаем глаза
                         left, right = self.extract_eyes(img)
                         if left is not None and right is not None:
-                            # Подготовка
                             left = self.prepare_eye(left)
                             right = self.prepare_eye(right)
                             
@@ -59,7 +55,6 @@ class SimpleGazeDataLoader:
         return np.array(eyes_left), np.array(eyes_right), np.array(targets)
     
     def find_image(self, path, idx):
-        """Находит изображение по индексу"""
         exts = ['.jpg', '.jpeg', '.png']
         files = [f for f in os.listdir(path) 
                 if any(f.lower().endswith(ext) for ext in exts)]
@@ -67,11 +62,8 @@ class SimpleGazeDataLoader:
         return os.path.join(path, files[idx]) if idx < len(files) else None
     
     def extract_eyes(self, img):
-        """Извлекает глаза из изображения"""
-        face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        eye_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_eye.xml')
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
             
         faces = face_cascade.detectMultiScale(img, 1.1, 5)
         
@@ -95,15 +87,12 @@ class SimpleGazeDataLoader:
         return left, right
     
     def prepare_eye(self, eye_img):
-        """Подготавливает изображение глаза"""
         eye = cv2.resize(eye_img, (36, 36))
         eye = cv2.equalizeHist(eye)
         return eye.astype('float32') / 255.0
 
 def main():
     print("Подготовка данных MPIIGaze")
-    
-    # Загрузка данных
     loader = SimpleGazeDataLoader(r"C:\Users\prince\Downloads\MPIIGaze\MPIIGaze")
     left, right, y = loader.load_mpiigaze(max_participants=3)
     
@@ -111,14 +100,12 @@ def main():
         print("Данные не загружены!")
         return
     
-    # Разделение данных
     left_train, left_test, right_train, right_test, y_train, y_test = train_test_split(
         left, right, y, test_size=0.2, random_state=42)
     
     left_train, left_val, right_train, right_val, y_train, y_val = train_test_split(
         left_train, right_train, y_train, test_size=0.2, random_state=42)
     
-    # Сохранение
     os.makedirs('simple_data', exist_ok=True)
     np.save('simple_data/left_train.npy', left_train)
     np.save('simple_data/right_train.npy', right_train)
