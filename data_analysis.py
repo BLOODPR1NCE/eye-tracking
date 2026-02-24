@@ -61,7 +61,7 @@ def plot_8graphs(df_coords, df_features, corr_matrix):
     ax[2].set(xlabel='X', ylabel='Y', title='Зависимость X от Y')
     
     # 4. 2D гистограмма
-    h = ax[3].hist2d(sample['gaze_x'], sample['gaze_y'], bins=50, cmap='viridis')
+    ax[3].hist2d(sample['gaze_x'], sample['gaze_y'], bins=50, cmap='viridis')
     ax[3].set(xlabel='X', ylabel='Y', title='2D гистограмма')
     
     # 5. Box plot
